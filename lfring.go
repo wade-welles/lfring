@@ -34,7 +34,7 @@ import (
 
 // CASSliceSlot is a function that performs a CAS operation
 // on a given slice slot by performing pointer arithmitic
-//  to find slot address. `addr` is a pointer to slice,
+// to find slot address. `addr` is a pointer to slice,
 // `data` is a pointer to old value to be compared,
 // `target` is a pointer to the new value,  `index` is
 // the slot number and `ptrsize` is the slice value size.
