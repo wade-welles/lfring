@@ -45,7 +45,7 @@ const (
 	// cRDSCHDTHRESHOLD is reader's spin threshold before
 	// yielding control with `runtime.Gosched()`.
 	cRDSCHDTHRESHOLD = 1000
-	// cRDSCHDTHRESHOLD is writer's spin threshold
+	// cWRSCHDTHRESHOLD is writer's spin threshold
 	// before yielding control with `runtime.Gosched()`.
 	cWRSCHDTHRESHOLD = 1000
 )
