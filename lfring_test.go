@@ -26,158 +26,137 @@ package lfring
 
 import (
 	"fmt"
+	"sync"
 	"testing"
-	"unsafe"
+	"time"
 )
 
 // - MARK: Test-structs section.
 
-type tstsample struct {
+type tstnode struct {
+	uid   string
 	value int
 }
 
-type tstslice struct {
-	nodes []unsafe.Pointer
-	sid   string
-}
+// - MARK: Test section.
 
-type tststore struct {
-	counter uint64
-	nodes   *tstslice
-}
-
-// - MARK: Tests section.
-
-func TestPointerTagging(t *testing.T) {
-	const sval = 8
+func TestRingConcurrent(t *testing.T) {
+	const size uint64 = 1024
 	var (
-		s    *tstsample     = &tstsample{value: sval}
-		tptr unsafe.Pointer // tagged pointer
-		tag  uint           // tag value
-		err  error
+		r       *Ring           = NewRing(size - 7)
+		wg      *sync.WaitGroup = &sync.WaitGroup{}
+		startCh chan struct{}
 	)
-	tptr, err = TaggedPointer(unsafe.Pointer(s), 1)
-	if err != nil {
-		t.Fatal("assertion failed, expected==nil.")
+	if r.size != size {
+		t.Fatalf("assertion failed, r.size(%d)!=size(%d).", r.size, size)
 	}
-	if (uintptr(tptr) & 0x3) != 0x1 {
+	startCh = make(chan struct{})
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(wg *sync.WaitGroup, start <-chan struct{}, index int) {
+			tmp := make([]interface{}, 0)
+			t := 0
+			time.Sleep(time.Millisecond * 190)
+			<-start
+		L:
+			for i := 0; i < 200; i++ {
+				if i == 50 {
+					time.Sleep(time.Millisecond * 5)
+				}
+				if t == 2 {
+					goto DONE
+				}
+				if r.Push(&tstnode{value: i * index}) {
+					tmp = append(tmp, i)
+				}
+				// runtime.Gosched()
+			}
+			t++
+			goto L
+		DONE:
+			fmt.Printf("PUSH[GOROUTINE %2.2d,\tLEN %d]:\n%v\n\n ", index, len(tmp), tmp)
+			wg.Done()
+		}(wg, startCh, i+1)
+	}
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(wg *sync.WaitGroup, start <-chan struct{}, index int) {
+			tmp := make([]interface{}, 0)
+			time.Sleep(time.Millisecond * 200)
+			<-start
+			for i := 0; i < 100; i++ {
+				if i == 20 {
+					time.Sleep(time.Millisecond * 5)
+				}
+				if a, b := r.Pop(); b {
+					if x, ok := (a).(*tstnode); !ok || a == nil {
+						continue
+					} else {
+						tmp = append(tmp, x)
+					}
+				}
+				// runtime.Gosched()
+			}
+			fmt.Printf("POP[GOROUTINE %2.2d,\tLEN %d]:\n%v\n\n", index, len(tmp), tmp)
+			wg.Done()
+		}(wg, startCh, i)
+	}
+	for i := 0; i < 4; i++ {
+		startCh <- struct{}{}
+	}
+	wg.Wait()
+	fmt.Printf("RING-NODES:\n%v\n", r.nodes)
+}
+
+func TestRingSerial(t *testing.T) {
+	const rcap = 8
+	var (
+		lfq *Ring = NewRing(rcap - 3)
+	)
+	// lfq.size rounds to nearest pow2
+	// therefor `lfq.size==rcap`
+	if lfq.size != rcap {
 		t.Fatal("assertion failed, expected equal.")
 	}
-	tag = GetTag(tptr)
-	if tag != 1 {
-		t.Fatal("assertion failed, expected equal.")
+	for i := 0; i < rcap; i++ {
+		uid := fmt.Sprintf("user_%d", i)
+		if !lfq.Push(&tstnode{uid: uid}) {
+			t.Fatal("inconsistent state, unable to push.")
+		}
 	}
-	tptr = Untag(unsafe.Pointer(s))
-	if uintptr(tptr)&0x3 != 0x0 {
-		t.Fatal("assertion failed, expected untagged pointer.")
-	}
-	s = (*tstsample)(tptr)
-	if s == nil || (s.value != sval) {
-		t.Fatal("assertion failed, expected s.value==sval.")
-	}
-	tag = GetTag(tptr)
-	if tag != 0 {
-		t.Fatal("assertion failed, expected tag==0.")
-	}
-}
-
-func TestRDCSS(t *testing.T) {
-	var (
-		cnode  *tststore      // current node
-		nnode  *tststore      // new node
-		cntptr unsafe.Pointer // counter pointer
-	)
-	cnode = &tststore{
-		counter: 16,
-		nodes:   &tstslice{make([]unsafe.Pointer, 0), "original"},
-	}
-	nnode = &tststore{
-		counter: 16,
-		nodes:   &tstslice{make([]unsafe.Pointer, 0), "replaced"},
-	}
-	cntptr = unsafe.Pointer(&cnode.counter)
-	// swap underlaying `nodes` iff counters
-	// are equal
-	if !RDCSS(
-		(*unsafe.Pointer)(cntptr),
-		(unsafe.Pointer)(unsafe.Pointer(uintptr(nnode.counter))),
-		(*unsafe.Pointer)(unsafe.Pointer(&cnode.nodes)),
-		unsafe.Pointer(cnode.nodes),
-		unsafe.Pointer(nnode.nodes),
-	) {
-		t.Fatal("Expected RDCSS to succeed")
-	}
-	if cnode.nodes == nil {
+	fmt.Printf("(push)RING: %+v\n", lfq)
+	// pushing into full ring returns false
+	if lfq.Push(&tstnode{uid: "invalid"}) {
 		t.Fatal("inconsistent state.")
 	}
-	if cnode.nodes.sid != "replaced" {
-		t.Fatal("inconsistent state.", cnode.nodes)
+	if (lfq.count != lfq.maxrdi) && (lfq.wri != 0 && lfq.count == 8) {
+		t.Fatal("asesrtion failed.")
 	}
-}
-
-func TestRDCSS2(t *testing.T) {
-	var (
-		s       *tstsample     = &tstsample{value: 64}
-		n       *tstsample     = &tstsample{value: 128}
-		ring    *Ring          = NewRing(8)
-		slotptr unsafe.Pointer = unsafe.Pointer(OffsetSliceSlot(unsafe.Pointer(&ring.nodes), 1, archPTRSIZE))
-		rdiPtr  unsafe.Pointer = unsafe.Pointer(&ring.rdi)
-		vptr    **tstsample    // value pointer
-	)
-	if !SetSliceSlot(unsafe.Pointer(&ring.nodes), 1, archPTRSIZE, unsafe.Pointer(&s)) {
-		t.Fatal("inconsistent state, can't write to slice/slot.")
+	for i := 0; i < rcap; i++ {
+		uid := fmt.Sprintf("user_%d", i)
+		val, ok := lfq.Pop()
+		if !ok {
+			t.Fatal("inconsistent state, unable to pop item.")
+		}
+		item, ok := val.(*tstnode)
+		if !ok || item == nil {
+			t.Fatal("inconsistent state, invalid value returned.")
+		}
+		if item.uid != uid {
+			t.Fatal("assertion failed, order violation.")
+		}
 	}
-	if ring.nodes == nil {
-		t.Fatal("assertion failed, fatal condition from incorrent pointer mutation.")
+	for i := 0; i < rcap; i++ {
+		if lfq.nodes[i] != nil {
+			t.Fatal("assertion failed, expected all slots to be nil.")
+		}
 	}
-	if ring.nodes[1] == nil {
-		t.Fatal("assertion failed, expected non-nil.")
+	// popping from empty ring returns nil, false
+	if _, ok := lfq.Pop(); ok {
+		t.Fatal("inconsistent state, returned value from empty ring.")
 	}
-	vptr = (**tstsample)(ring.nodes[1])
-	if vptr == nil {
-		t.Fatal("assertion failed, expected non-nil.")
-	} else if *vptr == nil {
-		t.Fatal("assertion failed, expected non-nil.")
+	if (lfq.wri != lfq.rdi) && lfq.count != 0 {
+		t.Fatal("assertion failed.")
 	}
-	if (*vptr) != s {
-		t.Fatal("assertion failed, expected equal as 's' is written to slot 1.")
-	}
-	if (((*vptr).value != s.value) && s.value == 64) || s.value != 64 {
-		t.Fatal("assertion failed, invalid pointers.")
-	}
-	fmt.Printf("nodes: %#x\n", ring.nodes)
-	if !RDCSS(
-		(*unsafe.Pointer)(unsafe.Pointer(&rdiPtr)),
-		(unsafe.Pointer)(unsafe.Pointer(rdiPtr)),
-		(*unsafe.Pointer)(unsafe.Pointer(slotptr)),
-		(unsafe.Pointer)(unsafe.Pointer(&s)),
-		(unsafe.Pointer)(unsafe.Pointer(n)),
-	) {
-		t.Fatal("inconsistent state, RDCSS failure.")
-	}
-	if s == nil {
-		t.Fatal("assertion failed, fatal condition from incorrect pointer mutation.")
-	} else if s.value != 64 {
-		t.Fatal("assertion failed, invalid pointer.")
-	}
-	fmt.Printf("nodes: %#x\n", ring.nodes)
-	if ring.nodes[1] == nil {
-		t.Fatal("assertion failed, expected non-nil for occupied slot.")
-	}
-	if s == nil {
-		t.Fatal("assertion failed, fatal condition from incorrect pointer mutation.")
-	}
-	vptr = (**tstsample)(slotptr)
-	if vptr == nil {
-		t.Fatal("assertion failed, expected non-nil pointer.")
-	} else if *vptr == nil {
-		t.Fatal("assertion failed, expected non-nil pointer.")
-	}
-	if (*vptr) != n {
-		t.Fatal("assertion failed, expected equal as 's' is swapped with 'n'.")
-	}
-	if (((*vptr).value != n.value) && n.value == 128) || n.value != 128 {
-		t.Fatal("assertion failed, invalid pointers.")
-	}
-	fmt.Println("slotptr:", *(**tstsample)(slotptr), "addr:", slotptr, &n, ring.nodes, ring.nodes[1])
+	fmt.Printf("(pop)RING: %+v\n", lfq)
 }

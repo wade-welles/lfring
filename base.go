@@ -1,7 +1,7 @@
 /*
 * MIT License
 *
-* Copyright (c) 2017 Mike Taghavi <mitghi[at]me.com>
+* Copyright (c) 2018 Mike Taghavi <mitghi[at]me.com>
 *
 * Permission is hereby granted, free of charge, to any person obtaining a copy
 * of this software and associated documentation files (the "Software"), to deal
@@ -22,24 +22,13 @@
 * SOFTWARE.
  */
 
-// lfring provides Lock-Free Multi-Reader, Multi-Writer Ring Buffer implementation.
+// Package lfring provides Lock-Free Multi-Reader, Multi-Writer Ring Buffer implementation.
 package lfring
 
-import (
-	"errors"
-	"unsafe"
-)
+import "unsafe"
 
 // Defaults
 const (
-	// archADDRSIZE is either 32 or 64
-	archADDRSIZE = 32 << uintptr(^uintptr(0)>>63)
-	// archWORDSIZE is either 4 or 8
-	archWORDSIZE = archADDRSIZE >> 3
-	// archMAXTAG is either 3 or 7
-	archMAXTAG = archWORDSIZE - 1
-	// archPTRMASK is either 2 or 3
-	archPTRMASK = ^uintptr((archADDRSIZE >> 5) + 1)
 	// ui64MASK is maximum int value
 	ui64NMASK = ^uint64(0)
 	// cRDSCHDTHRESHOLD is reader's spin threshold before
@@ -50,18 +39,14 @@ const (
 	cWRSCHDTHRESHOLD = 1000
 )
 
-// Errors
-var (
-	EPTRINVAL  error = errors.New("pointer: invalid.")
-	EPTRINVALT error = errors.New("pointer: invalid tag.")
-)
+// - MARK: Struct section.
 
-// Helpers
-var (
-	_PTR_       unsafe.Pointer
-	_INTERFACE_ interface{}
-	// archPTRSIZE is pointer size
-	archPTRSIZE uintptr = unsafe.Sizeof(_PTR_)
-	// sizeINTERFACE is interface size
-	sizeINTERFACE uintptr = unsafe.Sizeof(_INTERFACE_)
-)
+// Ring is a aligned struct with size of 64 bytes
+// used to implement ring buffer. Note that ring
+// capacity is always rounded to next power of 2.
+type Ring struct {
+	// 64bit aligned
+	nodes                  []unsafe.Pointer // storage with capacity `size`, pow2
+	wri, rdi, maxrdi, size uint64           // write, read, max-read and size (mask) indexes
+	count                  uint64           // occupancy counter
+}
